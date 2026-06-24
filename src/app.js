@@ -2,6 +2,7 @@ import { applyPatch, describePatch } from "./patches.js";
 import { createDemoDocument, createStarterDocument, evaluateLayer, evaluateScene, getActiveScene, layerDefaults, setOrInsertKeyframe } from "./model.js";
 import { exportLottieSubset, exportProjectJson, exportSvgSnapshot, getCompatibilityWarnings } from "./exporters.js";
 import { runLocalAgent } from "./aiAgent.js";
+import { validateProjectDocument } from "./projectValidation.js";
 
 const state = {
   document: loadDocument(),
@@ -385,12 +386,13 @@ function wireEvents() {
     const file = importInput.files?.[0];
     if (!file) return;
     try {
-      const next = JSON.parse(await file.text());
-      validateImportedDocument(next);
+      const next = validateProjectDocument(JSON.parse(await file.text()));
       pushUndo();
       state.document = next;
-      state.selectedLayerId = getActiveScene(state.document).layers[0]?.id ?? null;
       state.time = 0;
+      state.playing = false;
+      state.previewPatch = null;
+      reconcileSelection();
       persist();
       render();
     } catch (error) {
@@ -400,7 +402,6 @@ function wireEvents() {
 }
 
 function handleAction(action) {
-  const scene = getActiveScene(state.document);
   if (action === "play") state.playing = !state.playing;
   if (action === "undo") undo();
   if (action === "reset-project") resetProject();
@@ -425,6 +426,7 @@ function handleAction(action) {
     const exported = exportLottieSubset(state.document);
     download("open-motion-lottie.json", exported.json, "application/json");
   }
+  const scene = getActiveScene(state.document);
   state.time = Math.min(scene.duration, Math.max(0, state.time));
   persist();
   render();
@@ -555,10 +557,10 @@ function addLayer(type) {
 function resetProject() {
   pushUndo();
   state.document = createDemoDocument();
-  state.selectedLayerId = getActiveScene(state.document).layers[0]?.id ?? null;
   state.time = 0;
   state.playing = false;
   state.previewPatch = null;
+  reconcileSelection();
 }
 
 function keySelectedProperties() {
@@ -567,7 +569,7 @@ function keySelectedProperties() {
   const evaluated = evaluateLayer(layer, state.time);
   pushUndo();
   ["x", "y", "scaleX", "scaleY", "rotation", "opacity"].forEach((property) => {
-    setOrInsertKeyframe(layer, property, state.time, evaluated[property], "linear");
+    setOrInsertKeyframe(layer, property, state.time, evaluated[property], state.currentEase);
   });
 }
 
@@ -599,6 +601,7 @@ function applyPreviewPatch() {
   pushUndo();
   state.document = applyPatch(state.document, state.previewPatch.patch);
   state.previewPatch = null;
+  reconcileSelection();
 }
 
 function tick(now) {
@@ -625,7 +628,7 @@ function undo() {
   const previous = state.undoStack.pop();
   if (!previous) return;
   state.document = JSON.parse(previous);
-  state.selectedLayerId = getActiveScene(state.document).layers[0]?.id ?? null;
+  reconcileSelection();
 }
 
 function persist() {
@@ -636,17 +639,19 @@ function loadDocument() {
   const stored = localStorage.getItem("open-motion-document");
   if (!stored) return createDemoDocument();
   try {
-    return JSON.parse(stored);
+    return validateProjectDocument(JSON.parse(stored));
   } catch {
     return createDemoDocument();
   }
 }
 
-function validateImportedDocument(next) {
-  if (!next || typeof next !== "object") throw new Error("Project must be an object.");
-  if (!Array.isArray(next.scenes) || !next.scenes.length) throw new Error("Project must contain scenes.");
-  if (!next.activeSceneId) throw new Error("Project must have an activeSceneId.");
-  if (!next.scenes.some((scene) => scene.id === next.activeSceneId)) throw new Error("The active scene does not exist.");
+function reconcileSelection() {
+  const scene = getActiveScene(state.document);
+  if (state.document.activeSceneId !== scene.id) state.document.activeSceneId = scene.id;
+  if (!scene.layers.some((layer) => layer.id === state.selectedLayerId)) {
+    state.selectedLayerId = scene.layers[0]?.id ?? null;
+  }
+  state.time = Math.min(scene.duration, Math.max(0, state.time));
 }
 
 function download(filename, content, type) {

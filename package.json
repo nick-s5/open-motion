@@ -6,6 +6,6 @@
   "description": "AI-native, editor-first vector motion graphics application.",
   "scripts": {
     "start": "node scripts/serve.mjs",
-    "test": "node tests/smoke.mjs"
+    "test": "node tests/smoke.mjs && node tests/browser-smoke.mjs"
   }
 }

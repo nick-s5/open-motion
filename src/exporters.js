@@ -1,4 +1,4 @@
-import { evaluateScene, getActiveScene } from "./model.js";
+import { evaluateScene, evaluateTrack, getActiveScene } from "./model.js";
 
 export function exportProjectJson(document) {
   return JSON.stringify(document, null, 2);
@@ -28,10 +28,10 @@ export function exportLottieSubset(document) {
     nm: layer.name,
     sr: 1,
     ks: {
-      o: lottieAnimatedNumber(layer.keyframes?.opacity, 100, 1),
-      p: lottieAnimatedPoint(layer.keyframes?.x, layer.keyframes?.y),
-      s: lottieAnimatedScale(layer.keyframes?.scaleX, layer.keyframes?.scaleY),
-      r: lottieAnimatedNumber(layer.keyframes?.rotation, 1, 0)
+      o: lottieAnimatedNumber(layer.keyframes?.opacity, scene.fps, 100, 1),
+      p: lottieAnimatedPoint(layer.keyframes?.x, layer.keyframes?.y, scene.fps),
+      s: lottieAnimatedScale(layer.keyframes?.scaleX, layer.keyframes?.scaleY, scene.fps),
+      r: lottieAnimatedNumber(layer.keyframes?.rotation, scene.fps, 1, 0)
     },
     shapes: layer.type === "text" ? undefined : [lottieShape(layer)],
     t: layer.type === "text" ? lottieText(layer) : undefined,
@@ -122,6 +122,20 @@ function lottieLayerType(layer) {
 }
 
 function lottieShape(layer) {
+  const shape = lottieShapeGeometry(layer);
+  return {
+    ty: "gr",
+    it: [
+      shape,
+      lottieFill(layer.style?.fill),
+      lottieStroke(layer.style?.stroke, layer.style?.strokeWidth),
+      { ty: "tr", p: { a: 0, k: [0, 0] }, a: { a: 0, k: [0, 0] }, s: { a: 0, k: [100, 100] }, r: { a: 0, k: 0 }, o: { a: 0, k: 100 } }
+    ],
+    nm: layer.name
+  };
+}
+
+function lottieShapeGeometry(layer) {
   if (layer.type === "rect") {
     return {
       ty: "rc",
@@ -154,7 +168,9 @@ function lottieText(layer) {
             j: 2,
             tr: 0,
             lh: layer.text.size * 1.15,
-            fc: hexToUnitRgb(layer.style.fill)
+            fc: hexToUnitRgb(layer.style.fill),
+            sc: hexToUnitRgb(layer.style.stroke),
+            sw: layer.style.stroke === "transparent" ? 0 : (layer.style.strokeWidth ?? 0)
           }
         }
       ]
@@ -162,12 +178,34 @@ function lottieText(layer) {
   };
 }
 
-function lottieAnimatedNumber(track = [], scale = 1, defaultValue = 0) {
+function lottieFill(fill = "#000000") {
+  return {
+    ty: "fl",
+    c: { a: 0, k: hexToUnitRgb(fill) },
+    o: { a: 0, k: fill === "transparent" ? 0 : 100 },
+    r: 1,
+    nm: "Fill"
+  };
+}
+
+function lottieStroke(stroke = "transparent", strokeWidth = 0) {
+  return {
+    ty: "st",
+    c: { a: 0, k: hexToUnitRgb(stroke) },
+    o: { a: 0, k: stroke === "transparent" || strokeWidth === 0 ? 0 : 100 },
+    w: { a: 0, k: strokeWidth ?? 0 },
+    lc: 2,
+    lj: 2,
+    nm: "Stroke"
+  };
+}
+
+function lottieAnimatedNumber(track = [], fps = 60, scale = 1, defaultValue = 0) {
   if (track.length <= 1) return { a: 0, k: (track[0]?.value ?? defaultValue) * scale };
   return {
     a: 1,
     k: track.map((frame) => ({
-      t: frame.time * 60,
+      t: frame.time * fps,
       s: [frame.value * scale],
       i: { x: [0.667], y: [1] },
       o: { x: [0.333], y: [0] }
@@ -175,37 +213,38 @@ function lottieAnimatedNumber(track = [], scale = 1, defaultValue = 0) {
   };
 }
 
-function lottieAnimatedPoint(xTrack = [], yTrack = []) {
+function lottieAnimatedPoint(xTrack = [], yTrack = [], fps = 60) {
   const times = [...new Set([...xTrack, ...yTrack].map((frame) => frame.time))].sort((a, b) => a - b);
-  if (times.length <= 1) return { a: 0, k: [xTrack[0]?.value ?? 0, yTrack[0]?.value ?? 0, 0] };
+  if (times.length <= 1) {
+    const time = times[0] ?? 0;
+    return { a: 0, k: [evaluateTrack(xTrack, time, 0), evaluateTrack(yTrack, time, 0), 0] };
+  }
   return {
     a: 1,
     k: times.map((time) => ({
-      t: time * 60,
-      s: [valueAt(xTrack, time), valueAt(yTrack, time), 0],
+      t: time * fps,
+      s: [evaluateTrack(xTrack, time, 0), evaluateTrack(yTrack, time, 0), 0],
       i: { x: 0.667, y: 1 },
       o: { x: 0.333, y: 0 }
     }))
   };
 }
 
-function lottieAnimatedScale(xTrack = [], yTrack = []) {
+function lottieAnimatedScale(xTrack = [], yTrack = [], fps = 60) {
   const times = [...new Set([...xTrack, ...yTrack].map((frame) => frame.time))].sort((a, b) => a - b);
-  if (times.length <= 1) return { a: 0, k: [(xTrack[0]?.value ?? 1) * 100, (yTrack[0]?.value ?? 1) * 100, 100] };
+  if (times.length <= 1) {
+    const time = times[0] ?? 0;
+    return { a: 0, k: [evaluateTrack(xTrack, time, 1) * 100, evaluateTrack(yTrack, time, 1) * 100, 100] };
+  }
   return {
     a: 1,
     k: times.map((time) => ({
-      t: time * 60,
-      s: [(valueAt(xTrack, time) ?? 1) * 100, (valueAt(yTrack, time) ?? 1) * 100, 100],
+      t: time * fps,
+      s: [evaluateTrack(xTrack, time, 1) * 100, evaluateTrack(yTrack, time, 1) * 100, 100],
       i: { x: 0.667, y: 1 },
       o: { x: 0.333, y: 0 }
     }))
   };
-}
-
-function valueAt(track, time) {
-  const exact = track.find((frame) => frame.time === time);
-  return exact?.value ?? track[0]?.value ?? 0;
 }
 
 function hexToUnitRgb(hex = "#000000") {

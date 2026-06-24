@@ -3,6 +3,7 @@ import { createDemoDocument, createStarterDocument, evaluateScene, getActiveScen
 import { applyPatch } from "../src/patches.js";
 import { exportLottieSubset, exportSvgSnapshot } from "../src/exporters.js";
 import { runLocalAgent } from "../src/aiAgent.js";
+import { validateProjectDocument } from "../src/projectValidation.js";
 
 const document = createDemoDocument();
 const scene = getActiveScene(document);
@@ -37,6 +38,9 @@ assert.ok(Array.isArray(lottie.warnings));
 assert.equal(lottie.warnings.some((warning) => warning.includes("nested scenes")), true);
 assert.equal(parsedLottie.layers.some((layer) => layer.nm === "wordmark matte"), false);
 assert.equal(parsedLottie.layers.some((layer) => layer.nm === "nested UI badge"), false);
+assert.equal(parsedLottie.layers[0].ks.o.k[1].t, scene.layers[0].keyframes.opacity[1].time * scene.fps);
+assert.equal(parsedLottie.layers[0].ks.p.k[1].s[1], 360);
+assert.equal(parsedLottie.layers.some((layer) => layer.shapes?.some((shape) => shape.ty === "gr" && shape.it?.some((item) => item.ty === "fl"))), true);
 
 const social = createStarterDocument("social");
 assert.equal(getActiveScene(social).width, 1080);
@@ -44,6 +48,14 @@ assert.equal(getActiveScene(social).height, 1920);
 
 const micro = createStarterDocument("micro");
 assert.equal(getActiveScene(micro).name, "Button microinteraction");
+
+const imported = validateProjectDocument(JSON.parse(JSON.stringify(document)));
+assert.equal(imported.activeSceneId, document.activeSceneId);
+assert.equal(getActiveScene(imported).layers.length, 5);
+
+const unsafeImport = JSON.parse(JSON.stringify(document));
+unsafeImport.scenes[0].layers[0].style.fill = "\" onload=\"alert(1)";
+assert.throws(() => validateProjectDocument(unsafeImport), /#rrggbb or transparent/);
 
 const agentResult = runLocalAgent({
   mode: "edit",
