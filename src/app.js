@@ -11,6 +11,7 @@ const state = {
   playing: false,
   currentEase: "linear",
   drag: null,
+  scrubbing: false,
   previewPatch: null,
   undoStack: [],
   lastFrameAt: 0
@@ -95,16 +96,25 @@ function render() {
         <div class="timeline-duration">${scene.fps} fps · ${scene.duration.toFixed(2)}s</div>
       </div>
       <div class="timeline">
-        <div class="timeline-ruler">
+        <div class="timeline-sidebar">
           <div class="timeline-corner">Layers / Properties</div>
-          <div class="ruler-track">
-            ${timelineTicks(scene.duration, scene.fps)}
-            <div class="playhead-handle" title="${formatTimecode(state.time)}"></div>
-            <input class="ruler-scrubber" data-action="scrub" type="range" min="0" max="${scene.duration}" step="${1 / scene.fps}" value="${state.time}" title="Scrub ruler" />
+          <div class="timeline-labels">
+            ${scene.layers.map((layer) => timelineLayerLabel(layer)).join("")}
           </div>
         </div>
-        <div class="timeline-tracks">
-          ${scene.layers.map((layer) => timelineRow(layer, scene)).join("")}
+        <div class="timeline-scroll">
+          <div class="ruler-track">
+            <div class="ruler-property-spacer"></div>
+            <div class="ruler-time">
+              ${timelineTicks(scene.duration, scene.fps)}
+              <div class="playhead-handle" title="${formatTimecode(state.time)}"></div>
+              <button class="playhead-hit" data-scrub-surface title="Drag playhead" aria-label="Drag playhead"></button>
+              <div class="ruler-scrub-surface" data-scrub-surface title="Scrub timeline"></div>
+            </div>
+          </div>
+          <div class="timeline-tracks">
+            ${scene.layers.map((layer) => timelineRow(layer, scene)).join("")}
+          </div>
         </div>
       </div>
     </footer>
@@ -313,12 +323,19 @@ function timelineRow(layer, scene) {
     ? tracks.map(([property, frames]) => timelineLane(layer, property, frames, duration)).join("")
     : `<div class="timeline-lane empty"><span class="property-label">No keys</span><div class="track">${timelineGuideLines(duration, scene.fps)}</div></div>`;
   return `
-    <div class="timeline-layer${selected}" data-select-layer="${layer.id}">
-      <div class="timeline-layer-name">
-        <span>${escapeHtml(layer.name)}</span>
-        <small>${tracks.length} track${tracks.length === 1 ? "" : "s"}</small>
-      </div>
+    <div class="timeline-layer${selected}" data-select-layer="${layer.id}" style="--lane-count:${Math.max(1, tracks.length)};">
       <div class="timeline-layer-lanes">${lanes}</div>
+    </div>
+  `;
+}
+
+function timelineLayerLabel(layer) {
+  const tracks = Object.entries(layer.keyframes ?? {});
+  const selected = layer.id === state.selectedLayerId ? " selected" : "";
+  return `
+    <div class="timeline-layer-name${selected}" data-select-layer="${layer.id}" style="--lane-count:${Math.max(1, tracks.length)};">
+      <span>${escapeHtml(layer.name)}</span>
+      <small>${tracks.length} track${tracks.length === 1 ? "" : "s"}</small>
     </div>
   `;
 }
@@ -414,6 +431,15 @@ function wireEvents() {
         changed: false
       };
       element.setPointerCapture?.(event.pointerId);
+    });
+  });
+
+  app.querySelectorAll("[data-scrub-surface]").forEach((element) => {
+    element.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      state.scrubbing = true;
+      scrubTimelineAt(event.clientX);
     });
   });
 
@@ -638,6 +664,11 @@ function handleKeydown(event) {
 }
 
 function handlePointerMove(event) {
+  if (state.scrubbing) {
+    event.preventDefault();
+    scrubTimelineAt(event.clientX);
+    return;
+  }
   if (!state.drag) return;
   const layer = selectedLayer();
   if (!layer || layer.id !== state.drag.layerId) return;
@@ -654,6 +685,19 @@ function handlePointerMove(event) {
 
 function handlePointerUp() {
   state.drag = null;
+  state.scrubbing = false;
+}
+
+function scrubTimelineAt(clientX) {
+  const scene = getActiveScene(state.document);
+  const ruler = app.querySelector(".ruler-time");
+  if (!ruler) return;
+  const rect = ruler.getBoundingClientRect();
+  const ratio = rect.width > 0 ? (clientX - rect.left) / rect.width : 0;
+  const frame = Math.round(Math.max(0, Math.min(1, ratio)) * scene.duration * scene.fps);
+  state.time = Math.max(0, Math.min(scene.duration, frame / scene.fps));
+  state.playing = false;
+  render();
 }
 
 function svgPoint(event) {
