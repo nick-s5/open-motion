@@ -38,13 +38,12 @@ function render() {
         <span>Web Alpha</span>
       </div>
       <div class="toolbar" role="toolbar">
-        <button data-action="play" title="Play or pause">${state.playing ? "Pause" : "Play"}</button>
-        <button data-action="add-rect" title="Add rectangle">Rect</button>
-        <button data-action="add-ellipse" title="Add ellipse">Oval</button>
-        <button data-action="add-text" title="Add text">Text</button>
+        <button data-action="add-rect" title="Add rectangle (R)">Rect</button>
+        <button data-action="add-ellipse" title="Add ellipse (E)">Oval</button>
+        <button data-action="add-text" title="Add text (T)">Text</button>
         <button data-action="assign-mask" title="Assign nearest mask layer">Mask</button>
-        <button data-action="delete-layer" title="Delete selected layer">Delete</button>
-        <button data-action="undo" title="Undo">Undo</button>
+        <button data-action="delete-layer" title="Delete selected layer (Delete)">Delete</button>
+        <button data-action="undo" title="Undo (Z)">Undo</button>
         <button data-action="reset-project" title="Reset current project">Reset</button>
         <button data-action="import-json" title="Import project JSON">Import</button>
       </div>
@@ -52,7 +51,7 @@ function render() {
         <select data-scene-select title="Current scene">
           ${state.document.scenes.map((candidate) => `<option value="${candidate.id}" ${candidate.id === scene.id ? "selected" : ""}>${escapeHtml(candidate.name)}</option>`).join("")}
         </select>
-        <select data-starter>
+        <select data-starter title="Load starter project">
           <option value="logo">Logo reveal</option>
           <option value="social" ${state.document.name === "Social Title Card" ? "selected" : ""}>Social title</option>
           <option value="micro" ${state.document.name === "UI Microinteraction" ? "selected" : ""}>UI micro</option>
@@ -81,14 +80,32 @@ function render() {
       </aside>
     </main>
 
-    <footer class="timeline-panel">
-      <div class="timebar">
-        <span>${state.time.toFixed(2)}s</span>
-        <input class="scrubber" data-action="scrub" type="range" min="0" max="${scene.duration}" step="${1 / scene.fps}" value="${state.time}" />
-        <span>${scene.duration.toFixed(2)}s</span>
+    <footer class="timeline-panel" style="--playhead-left:${timePercent(state.time, scene.duration)}%;">
+      <div class="timeline-transport">
+        <div class="transport-buttons" role="toolbar" aria-label="Timeline transport">
+          <button data-action="prev-frame" title="Previous frame (←)">Prev</button>
+          <button class="play-button" data-action="play" title="Play or pause (Space)">${state.playing ? "Pause" : "Play"}</button>
+          <button data-action="next-frame" title="Next frame (→)">Next</button>
+        </div>
+        <div class="timeline-readout">
+          <label>Frame<input type="number" data-timeline-frame min="0" max="${Math.round(scene.duration * scene.fps)}" value="${Math.round(state.time * scene.fps)}" title="Frame number" /></label>
+          <span>${formatTimecode(state.time)} / ${formatTimecode(scene.duration)}</span>
+        </div>
+        <input class="scrubber" data-action="scrub" type="range" min="0" max="${scene.duration}" step="${1 / scene.fps}" value="${state.time}" title="Scrub timeline" />
+        <div class="timeline-duration">${scene.fps} fps · ${scene.duration.toFixed(2)}s</div>
       </div>
       <div class="timeline">
-        ${scene.layers.map((layer) => timelineRow(layer, scene.duration)).join("")}
+        <div class="timeline-ruler">
+          <div class="timeline-corner">Layers / Properties</div>
+          <div class="ruler-track">
+            ${timelineTicks(scene.duration, scene.fps)}
+            <div class="playhead-handle" title="${formatTimecode(state.time)}"></div>
+            <input class="ruler-scrubber" data-action="scrub" type="range" min="0" max="${scene.duration}" step="${1 / scene.fps}" value="${state.time}" title="Scrub ruler" />
+          </div>
+        </div>
+        <div class="timeline-tracks">
+          ${scene.layers.map((layer) => timelineRow(layer, scene)).join("")}
+        </div>
       </div>
     </footer>
     <input class="hidden-file" type="file" accept="application/json,.json" data-json-import />
@@ -182,39 +199,65 @@ function renderTextSpans(value) {
 }
 
 function renderInspector(layer) {
-  if (!layer) return `<section class="inspector"><div class="panel-title">Inspector</div><p>No layer selected.</p></section>`;
+  if (!layer) {
+    return `<section class="inspector">
+      <div class="panel-title">Inspector</div>
+      <p style="color: var(--muted); font-size: var(--text-sm); margin: var(--space-lg) 0 0; line-height: 1.5;">Select a layer to view and edit its properties.</p>
+    </section>`;
+  }
   const current = evaluateLayer(layer, state.time);
+  const typeLabel = layer.isMask ? "Mask" : layer.type === "precomp" ? "Scene" : layer.type;
   return `
     <section class="inspector">
       <div class="panel-title">Inspector</div>
-      <label>Name<input data-layer-field="name" value="${escapeHtml(layer.name)}" /></label>
-      ${layer.type === "text" ? `<label>Text<input data-layer-field="text.value" value="${escapeHtml(layer.text.value)}" /></label>` : ""}
-      <div class="property-grid">
-        ${numberField("x", current.x)}
-        ${numberField("y", current.y)}
-        ${numberField("scaleX", current.scaleX, 0.01)}
-        ${numberField("scaleY", current.scaleY, 0.01)}
-        ${numberField("rotation", current.rotation)}
-        ${numberField("opacity", current.opacity, 0.01)}
+      <div class="inspector-section">
+        <label>Name<input data-layer-field="name" value="${escapeHtml(layer.name)}" /></label>
+        <small style="color: var(--muted); font-size: var(--text-xs); text-transform: uppercase; font-weight: 600; letter-spacing: 0.03em;">${typeLabel}</small>
+        ${layer.type === "text" ? `<label style="margin-top: var(--space-md);">Text<input data-layer-field="text.value" value="${escapeHtml(layer.text.value)}" /></label>` : ""}
       </div>
-      <div class="property-grid">
-        <label>Fill<input type="color" data-style-field="fill" value="${safeColor(layer.style.fill)}" /></label>
-        <label>Stroke<input type="color" data-style-field="stroke" value="${safeColor(layer.style.stroke)}" /></label>
+      <div class="inspector-section">
+        <div class="inspector-section-title">Transform</div>
+        <div class="property-grid">
+          ${numberField("x", current.x)}
+          ${numberField("y", current.y)}
+          ${numberField("scaleX", current.scaleX, 0.01)}
+          ${numberField("scaleY", current.scaleY, 0.01)}
+          ${numberField("rotation", current.rotation)}
+          ${numberField("opacity", current.opacity, 0.01)}
+        </div>
       </div>
-      <label>Mask<select data-layer-field="maskId">
-        <option value="">None</option>
-        ${getActiveScene(state.document).layers.filter((candidate) => candidate.isMask).map((candidate) => `<option value="${candidate.id}" ${layer.maskId === candidate.id ? "selected" : ""}>${escapeHtml(candidate.name)}</option>`).join("")}
-      </select></label>
-      <label>Easing for new keyframes<select data-ease-select>
-        ${["linear", "easeIn", "easeOut", "easeInOut", "spring"].map((ease) => `<option value="${ease}" ${state.currentEase === ease ? "selected" : ""}>${ease}</option>`).join("")}
-      </select></label>
-      <div class="button-row">
-        <button data-action="key-selected">Keyframe selected props</button>
-        <button data-action="delete-playhead-keys">Delete playhead keys</button>
-        <button data-action="preset-pop">Pop reveal</button>
-        <button data-action="layer-up">Move up</button>
-        <button data-action="layer-down">Move down</button>
-        ${layer.type === "precomp" ? `<button data-action="open-precomp">Open scene</button>` : ""}
+      <div class="inspector-section">
+        <div class="inspector-section-title">Appearance</div>
+        <div class="property-grid">
+          <label>Fill<input type="color" data-style-field="fill" value="${safeColor(layer.style.fill)}" /></label>
+          <label>Stroke<input type="color" data-style-field="stroke" value="${safeColor(layer.style.stroke)}" /></label>
+        </div>
+      </div>
+      <div class="inspector-section">
+        <div class="inspector-section-title">Modifiers</div>
+        <label>Mask<select data-layer-field="maskId">
+          <option value="">None</option>
+          ${getActiveScene(state.document).layers.filter((candidate) => candidate.isMask).map((candidate) => `<option value="${candidate.id}" ${layer.maskId === candidate.id ? "selected" : ""}>${escapeHtml(candidate.name)}</option>`).join("")}
+        </select></label>
+      </div>
+      <div class="inspector-section">
+        <div class="inspector-section-title">Keyframes</div>
+        <label>Easing<select data-ease-select>
+          ${["linear", "easeIn", "easeOut", "easeInOut", "spring"].map((ease) => `<option value="${ease}" ${state.currentEase === ease ? "selected" : ""}>${ease}</option>`).join("")}
+        </select></label>
+        <div class="button-row" style="margin-top: var(--space-lg); gap: var(--space-sm);">
+          <button data-action="key-selected" title="Keyframe transform/opacity (K)">Keyframe</button>
+          <button data-action="delete-playhead-keys" title="Delete all keyframes at current time">Delete</button>
+        </div>
+      </div>
+      <div class="inspector-section">
+        <div class="inspector-section-title">Actions</div>
+        <div class="button-row" style="gap: var(--space-sm);">
+          <button data-action="preset-pop" title="Auto-generate pop reveal">Pop</button>
+          <button data-action="layer-up" title="Move layer up (↑)">↑</button>
+          <button data-action="layer-down" title="Move layer down (↓)">↓</button>
+          ${layer.type === "precomp" ? `<button data-action="open-precomp" title="Edit nested scene">Open</button>` : ""}
+        </div>
       </div>
     </section>
   `;
@@ -262,13 +305,87 @@ function renderExportPanel(warnings) {
   `;
 }
 
-function timelineRow(layer, duration) {
+function timelineRow(layer, scene) {
+  const duration = scene.duration;
   const tracks = Object.entries(layer.keyframes ?? {});
-  const marks = tracks.flatMap(([property, frames]) => frames.map((frame) => {
-    const left = (frame.time / duration) * 100;
-    return `<button class="key-dot" title="${property} ${frame.time.toFixed(2)}s ${frame.ease ?? "linear"}" style="left:${left}%;" data-select-layer="${layer.id}" data-time="${frame.time}"></button>`;
-  })).join("");
-  return `<div class="timeline-row"><span>${escapeHtml(layer.name)}</span><div class="track">${marks}</div></div>`;
+  const selected = layer.id === state.selectedLayerId ? " selected" : "";
+  const lanes = tracks.length
+    ? tracks.map(([property, frames]) => timelineLane(layer, property, frames, duration)).join("")
+    : `<div class="timeline-lane empty"><span class="property-label">No keys</span><div class="track">${timelineGuideLines(duration, scene.fps)}</div></div>`;
+  return `
+    <div class="timeline-layer${selected}" data-select-layer="${layer.id}">
+      <div class="timeline-layer-name">
+        <span>${escapeHtml(layer.name)}</span>
+        <small>${tracks.length} track${tracks.length === 1 ? "" : "s"}</small>
+      </div>
+      <div class="timeline-layer-lanes">${lanes}</div>
+    </div>
+  `;
+}
+
+function timelineLane(layer, property, frames, duration) {
+  const sorted = [...frames].sort((a, b) => a.time - b.time);
+  const spans = sorted.slice(0, -1).map((frame, index) => {
+    const next = sorted[index + 1];
+    const left = timePercent(frame.time, duration);
+    const width = Math.max(0, timePercent(next.time, duration) - left);
+    return `<span class="key-span ${trackColorClass(property)}" style="left:${left}%;width:${width}%;" title="${property} ${frame.ease ?? "linear"} to ${next.time.toFixed(2)}s"></span>`;
+  }).join("");
+  const keys = sorted.map((frame) => {
+    const left = timePercent(frame.time, duration);
+    return `<button class="key-dot ${trackColorClass(property)}" title="${property} ${frame.time.toFixed(2)}s ${frame.ease ?? "linear"}" style="left:${left}%;" data-select-layer="${layer.id}" data-time="${frame.time}"></button>`;
+  }).join("");
+  return `
+    <div class="timeline-lane">
+      <span class="property-label">${escapeHtml(property)}</span>
+      <div class="track">
+        ${timelineGuideLines(duration)}
+        ${spans}
+        ${keys}
+      </div>
+    </div>
+  `;
+}
+
+function timelineTicks(duration, fps) {
+  const minorStep = duration <= 6 ? 0.25 : duration <= 12 ? 0.5 : 1;
+  const ticks = [];
+  for (let time = 0; time <= duration + 0.0001; time += minorStep) {
+    const rounded = Math.round(time * fps) / fps;
+    const major = Math.abs(rounded - Math.round(rounded)) < 0.0001;
+    const left = timePercent(rounded, duration);
+    ticks.push(`<span class="ruler-tick${major ? " major" : ""}" style="left:${left}%;">${major ? `<b>${rounded.toFixed(1)}</b>` : ""}</span>`);
+  }
+  return ticks.join("");
+}
+
+function timelineGuideLines(duration, fps = 24) {
+  const step = duration <= 6 ? 0.5 : duration <= 12 ? 1 : 2;
+  const lines = [];
+  for (let time = 0; time <= duration + 0.0001; time += step) {
+    const rounded = Math.round(time * fps) / fps;
+    const major = Math.abs(rounded - Math.round(rounded)) < 0.0001;
+    lines.push(`<span class="track-guide${major ? " major" : ""}" style="left:${timePercent(rounded, duration)}%;"></span>`);
+  }
+  return lines.join("");
+}
+
+function trackColorClass(property) {
+  if (["x", "y", "scaleX", "scaleY", "rotation"].includes(property)) return "transform-track";
+  if (property === "opacity") return "opacity-track";
+  if (["fill", "stroke", "strokeWidth"].includes(property)) return "style-track";
+  return "effect-track";
+}
+
+function timePercent(time, duration) {
+  return duration > 0 ? Math.max(0, Math.min(100, (time / duration) * 100)) : 0;
+}
+
+function formatTimecode(time) {
+  const minutes = Math.floor(time / 60);
+  const seconds = Math.floor(time % 60);
+  const millis = Math.round((time % 1) * 1000);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
 }
 
 function wireEvents() {
@@ -322,6 +439,26 @@ function wireEvents() {
     } else {
       element.addEventListener("click", () => handleAction(element.dataset.action));
     }
+  });
+
+  const frameInputs = app.querySelectorAll("[data-frame-input]");
+  frameInputs.forEach((input) => {
+    input.addEventListener("change", () => {
+      const scene = getActiveScene(state.document);
+      const frame = Number(input.value);
+      state.time = (frame / scene.fps);
+      state.playing = false;
+      render();
+    });
+  });
+
+  const timelineFrameInput = app.querySelector("[data-timeline-frame]");
+  timelineFrameInput?.addEventListener("change", () => {
+    const scene = getActiveScene(state.document);
+    const frame = Number(timelineFrameInput.value);
+    state.time = (frame / scene.fps);
+    state.playing = false;
+    render();
   });
 
   app.querySelectorAll("[data-track-field]").forEach((input) => {
@@ -402,7 +539,17 @@ function wireEvents() {
 }
 
 function handleAction(action) {
+  const scene = getActiveScene(state.document);
+  const frameStep = 1 / scene.fps;
   if (action === "play") state.playing = !state.playing;
+  if (action === "prev-frame") {
+    state.time = Math.max(0, state.time - frameStep);
+    state.playing = false;
+  }
+  if (action === "next-frame") {
+    state.time = Math.min(scene.duration, state.time + frameStep);
+    state.playing = false;
+  }
   if (action === "undo") undo();
   if (action === "reset-project") resetProject();
   if (action === "import-json") app.querySelector("[data-json-import]")?.click();
@@ -426,7 +573,6 @@ function handleAction(action) {
     const exported = exportLottieSubset(state.document);
     download("open-motion-lottie.json", exported.json, "application/json");
   }
-  const scene = getActiveScene(state.document);
   state.time = Math.min(scene.duration, Math.max(0, state.time));
   persist();
   render();
@@ -435,7 +581,9 @@ function handleAction(action) {
 function handleKeydown(event) {
   const target = event.target;
   const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
-  if (typing) return;
+  const isFrameInput = target.dataset?.frameInput || target.dataset?.timelineFrame;
+
+  if (typing && !isFrameInput) return;
 
   if (event.code === "Space") {
     event.preventDefault();
@@ -451,17 +599,41 @@ function handleKeydown(event) {
   }
 
   if (event.key === "Delete" || event.key === "Backspace") {
-    event.preventDefault();
-    deleteSelectedLayer();
-    persist();
-    render();
+    if (!typing) {
+      event.preventDefault();
+      deleteSelectedLayer();
+      persist();
+      render();
+    }
+  }
+
+  if (event.key === "ArrowLeft") {
+    if (!typing) {
+      event.preventDefault();
+      const scene = getActiveScene(state.document);
+      state.time = Math.max(0, state.time - 1 / scene.fps);
+      state.playing = false;
+      render();
+    }
+  }
+
+  if (event.key === "ArrowRight") {
+    if (!typing) {
+      event.preventDefault();
+      const scene = getActiveScene(state.document);
+      state.time = Math.min(scene.duration, state.time + 1 / scene.fps);
+      state.playing = false;
+      render();
+    }
   }
 
   if (event.key.toLowerCase() === "k") {
-    event.preventDefault();
-    keySelectedProperties();
-    persist();
-    render();
+    if (!typing) {
+      event.preventDefault();
+      keySelectedProperties();
+      persist();
+      render();
+    }
   }
 }
 
