@@ -1,5 +1,5 @@
 import { applyPatch, describePatch } from "./patches.js";
-import { createDemoDocument, createStarterDocument, evaluateLayer, evaluateScene, getActiveScene, layerDefaults, setOrInsertKeyframe } from "./model.js";
+import { createDemoDocument, createStarterDocument, evaluateLayer, evaluateScene, getActiveScene, layerDefaults } from "./model.js";
 import { exportLottieSubset, exportProjectJson, exportSvgSnapshot, getCompatibilityWarnings } from "./exporters.js";
 import { runLocalAgent } from "./aiAgent.js";
 import { validateProjectDocument } from "./projectValidation.js";
@@ -12,8 +12,12 @@ const state = {
   currentEase: "linear",
   drag: null,
   scrubbing: false,
+  rightPanelTab: "inspect",
+  aiDrawerOpen: false,
   previewPatch: null,
   undoStack: [],
+  redoStack: [],
+  patchHistory: [],
   lastFrameAt: 0
 };
 
@@ -45,6 +49,8 @@ function render() {
         <button data-action="assign-mask" title="Assign nearest mask layer">Mask</button>
         <button data-action="delete-layer" title="Delete selected layer (Delete)">Delete</button>
         <button data-action="undo" title="Undo (Z)">Undo</button>
+        <button data-action="redo" title="Redo (Y)">Redo</button>
+        <button data-action="toggle-ai-drawer" title="Open AI drawer">AI</button>
         <button data-action="reset-project" title="Reset current project">Reset</button>
         <button data-action="import-json" title="Import project JSON">Import</button>
       </div>
@@ -75,11 +81,11 @@ function render() {
       </section>
 
       <aside class="panel inspector-panel">
-        ${renderInspector(selected)}
-        ${renderAiDock()}
-        ${renderExportPanel(warnings)}
+        ${renderRightPanel(selected, warnings)}
       </aside>
     </main>
+
+    ${renderAiDrawer()}
 
     <footer class="timeline-panel" style="--playhead-left:${timePercent(state.time, scene.duration)}%;">
       <div class="timeline-transport">
@@ -208,6 +214,18 @@ function renderTextSpans(value) {
   return lines.map((line, index) => `<tspan x="0" dy="${index === 0 ? `${start}em` : "1.16em"}">${escapeHtml(line)}</tspan>`).join("");
 }
 
+function renderRightPanel(layer, warnings) {
+  return `
+    <div class="right-panel-tabs" role="tablist" aria-label="Right panel">
+      <button class="${state.rightPanelTab === "inspect" ? "active" : ""}" data-panel-tab="inspect" role="tab" aria-selected="${state.rightPanelTab === "inspect"}">Inspect</button>
+      <button class="${state.rightPanelTab === "export" ? "active" : ""}" data-panel-tab="export" role="tab" aria-selected="${state.rightPanelTab === "export"}">Export</button>
+    </div>
+    <div class="right-panel-body">
+      ${state.rightPanelTab === "export" ? renderExportPanel(warnings) : renderInspector(layer)}
+    </div>
+  `;
+}
+
 function renderInspector(layer) {
   if (!layer) {
     return `<section class="inspector">
@@ -223,24 +241,30 @@ function renderInspector(layer) {
       <div class="inspector-section">
         <label>Name<input data-layer-field="name" value="${escapeHtml(layer.name)}" /></label>
         <small style="color: var(--muted); font-size: var(--text-xs); text-transform: uppercase; font-weight: 600; letter-spacing: 0.03em;">${typeLabel}</small>
-        ${layer.type === "text" ? `<label style="margin-top: var(--space-md);">Text<input data-layer-field="text.value" value="${escapeHtml(layer.text.value)}" /></label>` : ""}
       </div>
       <div class="inspector-section">
         <div class="inspector-section-title">Transform</div>
-        <div class="property-grid">
-          ${numberField("x", current.x)}
-          ${numberField("y", current.y)}
-          ${numberField("scaleX", current.scaleX, 0.01)}
-          ${numberField("scaleY", current.scaleY, 0.01)}
-          ${numberField("rotation", current.rotation)}
-          ${numberField("opacity", current.opacity, 0.01)}
+        <div class="property-list">
+          ${keyframeNumberField(layer, "x", "Position X", current.x)}
+          ${keyframeNumberField(layer, "y", "Position Y", current.y)}
+          ${keyframeNumberField(layer, "scaleX", "Scale X", current.scaleX, 0.01)}
+          ${keyframeNumberField(layer, "scaleY", "Scale Y", current.scaleY, 0.01)}
+          ${keyframeNumberField(layer, "rotation", "Rotation", current.rotation)}
+          ${keyframeNumberField(layer, "opacity", "Opacity", current.opacity, 0.01)}
         </div>
       </div>
+      ${renderLayerSpecificInspector(layer)}
       <div class="inspector-section">
         <div class="inspector-section-title">Appearance</div>
-        <div class="property-grid">
-          <label>Fill<input type="color" data-style-field="fill" value="${safeColor(layer.style.fill)}" /></label>
-          <label>Stroke<input type="color" data-style-field="stroke" value="${safeColor(layer.style.stroke)}" /></label>
+        <div class="property-list">
+          ${keyframeColorField(layer, "fill", "Fill", current.fill)}
+          ${keyframeColorField(layer, "stroke", "Stroke", current.stroke)}
+          ${keyframeNumberField(layer, "strokeWidth", "Stroke Width", current.strokeWidth)}
+          ${keyframeNumberField(layer, "blur", "Blur", current.blur)}
+          <label class="property-row property-row-static">
+            <span>Shadow</span>
+            <input type="checkbox" data-layer-field="effects.shadow" ${layer.effects?.shadow ? "checked" : ""} />
+          </label>
         </div>
       </div>
       <div class="inspector-section">
@@ -273,17 +297,126 @@ function renderInspector(layer) {
   `;
 }
 
-function numberField(property, value, step = 1) {
-  return `<label>${property}<input type="number" step="${step}" data-track-field="${property}" value="${round(value)}" /></label>`;
+function renderLayerSpecificInspector(layer) {
+  if (layer.type === "rect") {
+    return `
+      <div class="inspector-section">
+        <div class="inspector-section-title">Rectangle</div>
+        <div class="property-list">
+          ${staticNumberField("Width", "shape.width", layer.shape.width)}
+          ${staticNumberField("Height", "shape.height", layer.shape.height)}
+          ${staticNumberField("Radius", "shape.radius", layer.shape.radius)}
+        </div>
+      </div>
+    `;
+  }
+
+  if (layer.type === "ellipse") {
+    return `
+      <div class="inspector-section">
+        <div class="inspector-section-title">Ellipse</div>
+        <div class="property-list">
+          ${staticNumberField("Radius X", "shape.rx", layer.shape.rx)}
+          ${staticNumberField("Radius Y", "shape.ry", layer.shape.ry)}
+        </div>
+      </div>
+    `;
+  }
+
+  if (layer.type === "text") {
+    return `
+      <div class="inspector-section">
+        <div class="inspector-section-title">Text</div>
+        <label class="property-row property-row-static property-row-wide">
+          <span>Value</span>
+          <input data-layer-field="text.value" value="${escapeHtml(layer.text.value)}" />
+        </label>
+        <div class="property-list">
+          ${staticNumberField("Size", "text.size", layer.text.size)}
+          ${staticNumberField("Weight", "text.weight", layer.text.weight)}
+          <label class="property-row property-row-static">
+            <span>Align</span>
+            <select data-layer-field="text.align">
+              ${["start", "middle", "end"].map((align) => `<option value="${align}" ${layer.text.align === align ? "selected" : ""}>${align}</option>`).join("")}
+            </select>
+          </label>
+        </div>
+      </div>
+    `;
+  }
+
+  if (layer.type === "precomp") {
+    const scene = state.document.scenes.find((candidate) => candidate.id === layer.sceneId);
+    return `
+      <div class="inspector-section">
+        <div class="inspector-section-title">Scene Instance</div>
+        <small class="selection-note">${escapeHtml(scene?.name ?? "Missing scene")}</small>
+        <div class="property-list">
+          ${staticNumberField("Width", "shape.width", layer.shape.width)}
+          ${staticNumberField("Height", "shape.height", layer.shape.height)}
+        </div>
+      </div>
+    `;
+  }
+
+  return "";
 }
 
-function renderAiDock() {
+function keyframeNumberField(layer, property, label, value, step = 1) {
+  return propertyRow({
+    label,
+    property,
+    input: `<input type="number" step="${step}" data-track-field="${property}" value="${round(value)}" />`,
+    keyed: hasKeyframeAt(layer, property)
+  });
+}
+
+function keyframeColorField(layer, property, label, value) {
+  return propertyRow({
+    label,
+    property,
+    input: `<input type="color" data-track-field="${property}" value="${safeColor(value)}" />`,
+    keyed: hasKeyframeAt(layer, property)
+  });
+}
+
+function staticNumberField(label, path, value, step = 1) {
+  return `
+    <label class="property-row property-row-static">
+      <span>${label}</span>
+      <input type="number" step="${step}" data-layer-field="${path}" value="${round(value)}" />
+    </label>
+  `;
+}
+
+function propertyRow({ label, property, input, keyed }) {
+  return `
+    <label class="property-row">
+      <span>${label}</span>
+      ${input}
+      <button class="keyframe-toggle${keyed ? " is-keyed" : ""}" data-keyframe-property="${property}" title="${keyed ? "Remove keyframe" : "Add keyframe"}" aria-label="${keyed ? "Remove" : "Add"} ${label} keyframe"></button>
+    </label>
+  `;
+}
+
+function hasKeyframeAt(layer, property) {
+  return (layer.keyframes?.[property] ?? []).some((frame) => Math.abs(frame.time - state.time) < 0.0001);
+}
+
+function renderAiDrawer() {
   const preview = state.previewPatch
     ? `<div class="patch-preview"><strong>${escapeHtml(state.previewPatch.title)}</strong><pre>${escapeHtml(state.previewPatch.message)}</pre><div class="button-row"><button data-action="apply-ai">Apply</button><button data-action="discard-ai">Discard</button></div></div>`
     : "";
+  const history = state.patchHistory.length
+    ? `<div class="patch-history"><strong>Patch history</strong>${state.patchHistory.map((entry) => `<p><span>${escapeHtml(entry.title)}</span><small>${entry.count} op${entry.count === 1 ? "" : "s"}</small></p>`).join("")}</div>`
+    : "";
   return `
-    <section class="ai-dock">
-      <div class="panel-title">AI Control</div>
+    <section class="ai-drawer${state.aiDrawerOpen ? " open" : ""}" aria-hidden="${!state.aiDrawerOpen}">
+      <div class="ai-drawer-header">
+        <strong>AI Control</strong>
+        <button data-action="toggle-ai-drawer" title="Close AI drawer">Close</button>
+      </div>
+      <div class="ai-drawer-body">
       <div class="mode-row">
         <select data-ai-mode>
           <option value="draft">Draft</option>
@@ -295,6 +428,8 @@ function renderAiDock() {
       <textarea data-ai-prompt rows="3" placeholder="Try: make this bouncier, stagger the layers, draft a logo reveal"></textarea>
       <button data-action="run-ai">Preview patch</button>
       ${preview}
+      ${history}
+      </div>
     </section>
   `;
 }
@@ -406,6 +541,13 @@ function formatTimecode(time) {
 }
 
 function wireEvents() {
+  app.querySelectorAll("[data-panel-tab]").forEach((element) => {
+    element.addEventListener("click", () => {
+      state.rightPanelTab = element.dataset.panelTab;
+      render();
+    });
+  });
+
   app.querySelectorAll("[data-select-layer]").forEach((element) => {
     element.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -449,7 +591,10 @@ function wireEvents() {
       const layer = getActiveScene(state.document).layers.find((candidate) => candidate.id === element.dataset.layerToggle);
       if (!layer) return;
       pushUndo();
-      layer.visible = layer.visible === false;
+      applyDocumentPatch({
+        title: "Toggle layer visibility",
+        operations: [{ type: "setLayerProperty", layerId: layer.id, path: "visible", value: layer.visible === false }]
+      });
       persist();
       render();
     });
@@ -492,18 +637,40 @@ function wireEvents() {
       const layer = selectedLayer();
       if (!layer) return;
       pushUndo();
-      setOrInsertKeyframe(layer, input.dataset.trackField, state.time, Number(input.value), state.currentEase);
+      applyDocumentPatch({
+        title: "Set keyframe",
+        operations: [{
+          type: "insertKeyframe",
+          layerId: layer.id,
+          property: input.dataset.trackField,
+          time: state.time,
+          value: normalizeTrackValue(input),
+          ease: state.currentEase
+        }]
+      });
       persist();
       render();
     });
   });
 
-  app.querySelectorAll("[data-style-field]").forEach((input) => {
-    input.addEventListener("change", () => {
+  app.querySelectorAll("[data-keyframe-property]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
       const layer = selectedLayer();
       if (!layer) return;
+      const property = button.dataset.keyframeProperty;
       pushUndo();
-      layer.style[input.dataset.styleField] = input.value;
+      if (hasKeyframeAt(layer, property)) {
+        applyDocumentPatch({
+          title: "Delete property keyframe",
+          operations: [{ type: "deleteKeyframesAtTime", layerId: layer.id, time: state.time, properties: [property] }]
+        });
+      } else {
+        applyDocumentPatch({
+          title: "Insert property keyframe",
+          operations: [{ type: "insertKeyframe", layerId: layer.id, property, time: state.time, value: currentPropertyValue(layer, property), ease: state.currentEase }]
+        });
+      }
       persist();
       render();
     });
@@ -514,7 +681,10 @@ function wireEvents() {
       const layer = selectedLayer();
       if (!layer) return;
       pushUndo();
-      setByPath(layer, input.dataset.layerField, input.value);
+      applyDocumentPatch({
+        title: "Set layer property",
+        operations: [{ type: "setLayerProperty", layerId: layer.id, path: input.dataset.layerField, value: normalizeLayerFieldValue(input) }]
+      });
       persist();
       render();
     });
@@ -577,6 +747,8 @@ function handleAction(action) {
     state.playing = false;
   }
   if (action === "undo") undo();
+  if (action === "redo") redo();
+  if (action === "toggle-ai-drawer") state.aiDrawerOpen = !state.aiDrawerOpen;
   if (action === "reset-project") resetProject();
   if (action === "import-json") app.querySelector("[data-json-import]")?.click();
   if (action === "add-rect") addLayer("rect");
@@ -617,9 +789,21 @@ function handleKeydown(event) {
     render();
   }
 
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "z") {
+    event.preventDefault();
+    redo();
+    persist();
+    render();
+  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
     event.preventDefault();
     undo();
+    persist();
+    render();
+  }
+
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
+    event.preventDefault();
+    redo();
     persist();
     render();
   }
@@ -677,8 +861,13 @@ function handlePointerMove(event) {
     pushUndo();
     state.drag.changed = true;
   }
-  setOrInsertKeyframe(layer, "x", state.time, round(point.x + state.drag.offsetX), state.currentEase);
-  setOrInsertKeyframe(layer, "y", state.time, round(point.y + state.drag.offsetY), state.currentEase);
+  applyDocumentPatch({
+    title: "Move layer",
+    operations: [
+      { type: "insertKeyframe", layerId: layer.id, property: "x", time: state.time, value: round(point.x + state.drag.offsetX), ease: state.currentEase },
+      { type: "insertKeyframe", layerId: layer.id, property: "y", time: state.time, value: round(point.y + state.drag.offsetY), ease: state.currentEase }
+    ]
+  });
   persist();
   render();
 }
@@ -713,12 +902,14 @@ function deleteSelectedLayer() {
   const scene = getActiveScene(state.document);
   const index = scene.layers.findIndex((layer) => layer.id === state.selectedLayerId);
   if (index < 0) return;
+  const nextSelectedId = scene.layers[index + 1]?.id ?? scene.layers[index - 1]?.id ?? null;
   pushUndo();
-  const [deleted] = scene.layers.splice(index, 1);
-  for (const layer of scene.layers) {
-    if (layer.maskId === deleted.id) layer.maskId = null;
-  }
-  state.selectedLayerId = scene.layers[Math.min(index, scene.layers.length - 1)]?.id ?? null;
+  applyDocumentPatch({
+    title: "Delete layer",
+    operations: [{ type: "deleteLayer", layerId: state.selectedLayerId }]
+  });
+  state.selectedLayerId = nextSelectedId;
+  reconcileSelection();
 }
 
 function moveSelectedLayer(direction) {
@@ -727,8 +918,11 @@ function moveSelectedLayer(direction) {
   const nextIndex = index + direction;
   if (index < 0 || nextIndex < 0 || nextIndex >= scene.layers.length) return;
   pushUndo();
-  const [layer] = scene.layers.splice(index, 1);
-  scene.layers.splice(nextIndex, 0, layer);
+  applyDocumentPatch({
+    title: "Reorder layer",
+    operations: [{ type: "reorderLayer", layerId: state.selectedLayerId, index: nextIndex }]
+  });
+  reconcileSelection();
 }
 
 function openSelectedPrecomp() {
@@ -745,10 +939,11 @@ function deletePlayheadKeyframes() {
   const layer = selectedLayer();
   if (!layer?.keyframes) return;
   pushUndo();
-  for (const [property, frames] of Object.entries(layer.keyframes)) {
-    layer.keyframes[property] = frames.filter((frame) => Math.abs(frame.time - state.time) > 0.0001);
-    if (!layer.keyframes[property].length) delete layer.keyframes[property];
-  }
+  state.document = applyPatch(state.document, {
+    title: "Delete playhead keyframes",
+    operations: [{ type: "deleteKeyframesAtTime", layerId: layer.id, time: state.time }]
+  });
+  reconcileSelection();
 }
 
 function assignMask() {
@@ -759,15 +954,23 @@ function assignMask() {
   const mask = masks.at(-1);
   if (!mask) return;
   pushUndo();
-  layer.maskId = layer.maskId === mask.id ? null : mask.id;
+  applyDocumentPatch({
+    title: "Assign mask",
+    operations: [{ type: "setLayerProperty", layerId: layer.id, path: "maskId", value: layer.maskId === mask.id ? null : mask.id }]
+  });
+  reconcileSelection();
 }
 
 function addLayer(type) {
   const scene = getActiveScene(state.document);
   pushUndo();
   const layer = layerDefaults(type, scene);
-  scene.layers.push(layer);
+  applyDocumentPatch({
+    title: "Create layer",
+    operations: [{ type: "createLayer", layerType: type, layer }]
+  });
   state.selectedLayerId = layer.id;
+  reconcileSelection();
 }
 
 function resetProject() {
@@ -784,9 +987,18 @@ function keySelectedProperties() {
   if (!layer) return;
   const evaluated = evaluateLayer(layer, state.time);
   pushUndo();
-  ["x", "y", "scaleX", "scaleY", "rotation", "opacity"].forEach((property) => {
-    setOrInsertKeyframe(layer, property, state.time, evaluated[property], state.currentEase);
+  applyDocumentPatch({
+    title: "Keyframe selected properties",
+    operations: ["x", "y", "scaleX", "scaleY", "rotation", "opacity"].map((property) => ({
+      type: "insertKeyframe",
+      layerId: layer.id,
+      property,
+      time: state.time,
+      value: evaluated[property],
+      ease: state.currentEase
+    }))
   });
+  reconcileSelection();
 }
 
 function runAi() {
@@ -816,6 +1028,7 @@ function applyPreviewPatch() {
   }
   pushUndo();
   state.document = applyPatch(state.document, state.previewPatch.patch);
+  recordPatchHistory(state.previewPatch);
   state.previewPatch = null;
   reconcileSelection();
 }
@@ -838,12 +1051,37 @@ function selectedLayer() {
 function pushUndo() {
   state.undoStack.push(JSON.stringify(state.document));
   if (state.undoStack.length > 50) state.undoStack.shift();
+  state.redoStack = [];
 }
 
 function undo() {
   const previous = state.undoStack.pop();
   if (!previous) return;
+  state.redoStack.push(JSON.stringify(state.document));
+  if (state.redoStack.length > 50) state.redoStack.shift();
   state.document = JSON.parse(previous);
+  reconcileSelection();
+}
+
+function redo() {
+  const next = state.redoStack.pop();
+  if (!next) return;
+  state.undoStack.push(JSON.stringify(state.document));
+  if (state.undoStack.length > 50) state.undoStack.shift();
+  state.document = JSON.parse(next);
+  reconcileSelection();
+}
+
+function recordPatchHistory(previewPatch) {
+  state.patchHistory.unshift({
+    title: previewPatch.title,
+    count: previewPatch.patch.operations.length
+  });
+  state.patchHistory = state.patchHistory.slice(0, 8);
+}
+
+function applyDocumentPatch(patch) {
+  state.document = applyPatch(state.document, patch);
   reconcileSelection();
 }
 
@@ -880,14 +1118,21 @@ function download(filename, content, type) {
   URL.revokeObjectURL(url);
 }
 
-function setByPath(object, path, value) {
-  const parts = path.split(".");
-  let cursor = object;
-  for (const part of parts.slice(0, -1)) {
-    cursor[part] ??= {};
-    cursor = cursor[part];
-  }
-  cursor[parts.at(-1)] = value;
+function normalizeLayerFieldValue(input) {
+  if (input.type === "checkbox") return input.checked;
+  if (input.type === "number") return Number(input.value);
+  if (input.dataset.layerField === "maskId" && input.value === "") return null;
+  return input.value;
+}
+
+function normalizeTrackValue(input) {
+  if (input.type === "number") return Number(input.value);
+  return input.value;
+}
+
+function currentPropertyValue(layer, property) {
+  const current = evaluateLayer(layer, state.time);
+  return current[property];
 }
 
 function cssBlend(mode) {

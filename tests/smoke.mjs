@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createDemoDocument, createStarterDocument, evaluateScene, getActiveScene } from "../src/model.js";
-import { applyPatch } from "../src/patches.js";
+import { applyPatch, validatePatch } from "../src/patches.js";
 import { exportLottieSubset, exportSvgSnapshot } from "../src/exporters.js";
 import { runLocalAgent } from "../src/aiAgent.js";
 import { validateProjectDocument } from "../src/projectValidation.js";
@@ -24,6 +24,19 @@ const patched = applyPatch(document, {
 
 const patchedScene = getActiveScene(patched);
 assert.equal(patchedScene.layers[0].keyframes.x.some((frame) => frame.value === 777), true);
+
+assert.throws(() => validatePatch({
+  operations: [{ type: "insertKeyframe", layerId: selected, property: "opacity", time: 2, value: 2 }]
+}, document), /out of range/);
+assert.throws(() => validatePatch({
+  operations: [{ type: "deleteLayer", layerId: "missing_layer" }]
+}, document), /target layer does not exist/);
+
+const withDeletedKey = applyPatch(patched, {
+  title: "delete key at playhead",
+  operations: [{ type: "deleteKeyframesAtTime", layerId: selected, time: 2, properties: ["x"] }]
+});
+assert.equal(getActiveScene(withDeletedKey).layers[0].keyframes.x.some((frame) => frame.time === 2), false);
 
 const svg = exportSvgSnapshot(patched, 1);
 assert.match(svg, /<svg/);

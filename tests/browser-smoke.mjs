@@ -58,11 +58,14 @@ try {
   assert.ok(await evaluate(cdp, "document.querySelectorAll('.layer-row').length >= 5"));
 
   assert.equal(await runCheck(cdp, playShortcutCheck), true, "space toggles playback");
+  assert.equal(await runCheck(cdp, inspectorPropertyPatchCheck), true, "inspector property edits apply through patches");
+  assert.equal(await runCheck(cdp, exportTabCheck), true, "export controls live in the export tab");
   assert.equal(await runCheck(cdp, deleteUndoShortcutCheck), true, "delete and undo shortcuts keep layers synchronized");
   assert.equal(await runCheck(cdp, keyframeShortcutCheck), true, "K inserts keyframes with selected easing");
   assert.equal(await runCheck(cdp, canvasDragCheck), true, "canvas drag changes selected layer position");
   assert.equal(await runCheck(cdp, resetControlCheck), true, "reset control restores the local demo project");
   assert.equal(await runCheck(cdp, jsonImportCheck), true, "JSON import loads and persists a valid project");
+  assert.equal(await runCheck(cdp, aiPatchHistoryCheck), true, "AI apply records patch history");
 
   await cdp.close();
   console.log("Browser smoke tests passed.");
@@ -181,7 +184,36 @@ function deleteUndoShortcutCheck() {
   const deleted = document.querySelectorAll(".layer-row").length === before - 1;
   window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true }));
   const restored = document.querySelectorAll(".layer-row").length === before;
-  return deleted && restored;
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "y", ctrlKey: true, bubbles: true }));
+  const redone = document.querySelectorAll(".layer-row").length === before - 1;
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true }));
+  const restoredAgain = document.querySelectorAll(".layer-row").length === before;
+  return deleted && restored && redone && restoredAgain;
+}
+
+function inspectorPropertyPatchCheck() {
+  const nameInput = document.querySelector('[data-layer-field="name"]');
+  const fillInput = document.querySelector('[data-track-field="fill"]');
+  if (!nameInput || !fillInput) return false;
+
+  nameInput.value = "semantic edit layer";
+  nameInput.dispatchEvent(new Event("change", { bubbles: true }));
+  fillInput.value = "#123456";
+  fillInput.dispatchEvent(new Event("change", { bubbles: true }));
+
+  const renamed = document.querySelector(".layer-row span")?.textContent === "semantic edit layer";
+  const recolored = document.querySelector("[data-drag-layer]")?.getAttribute("fill") === "#123456";
+  return renamed && recolored;
+}
+
+function exportTabCheck() {
+  const exportTab = document.querySelector('[data-panel-tab="export"]');
+  exportTab?.click();
+  const hasExport = Boolean(document.querySelector('[data-action="export-json"]'));
+  const inspectTab = document.querySelector('[data-panel-tab="inspect"]');
+  inspectTab?.click();
+  const restoredInspector = Boolean(document.querySelector('[data-layer-field="name"]'));
+  return hasExport && restoredInspector;
 }
 
 function keyframeShortcutCheck() {
@@ -194,7 +226,9 @@ function keyframeShortcutCheck() {
   easing.dispatchEvent(new Event("change", { bubbles: true }));
 
   window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", bubbles: true }));
-  return Array.from(document.querySelectorAll(".key-dot")).some((dot) => dot.title.includes("x 0.50s easeInOut"));
+  const timelineKey = Array.from(document.querySelectorAll(".key-dot")).some((dot) => dot.title.includes("x 0.50s easeInOut"));
+  const inspectorKey = Boolean(document.querySelector('.keyframe-toggle[data-keyframe-property="x"].is-keyed'));
+  return timelineKey && inspectorKey;
 }
 
 function canvasDragCheck() {
@@ -278,4 +312,26 @@ async function jsonImportCheck() {
   return document.querySelector(".layer-row span")?.textContent === "imported rectangle"
     && document.querySelector("[data-scene-select]")?.value === "scene_imported"
     && stored.name === "Imported Smoke Project";
+}
+
+async function aiPatchHistoryCheck() {
+  async function waitForBrowserElement(selector) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const element = document.querySelector(selector);
+      if (element) return element;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return null;
+  }
+
+  document.querySelector('[data-action="reset-project"]').click();
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  document.querySelector('[data-action="toggle-ai-drawer"]').click();
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  document.querySelector("[data-ai-prompt]").value = "make this bouncier";
+  document.querySelector('[data-action="run-ai"]').click();
+  const applyButton = await waitForBrowserElement('[data-action="apply-ai"]');
+  if (!applyButton) return false;
+  applyButton.click();
+  return Boolean(await waitForBrowserElement(".patch-history p"));
 }
